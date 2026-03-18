@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:tracking="http://www.mulesoft.org/schema/mule/ee/tracking"
+      xmlns:os="http://www.mulesoft.org/schema/mule/os"
+      xmlns:salesforce-pub-sub="http://www.mulesoft.org/schema/mule/salesforce-pub-sub"
+      xmlns:azure-service-bus-messaging="http://www.mulesoft.org/schema/mule/azure-service-bus-messaging"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:salesforce="http://www.mulesoft.org/schema/mule/salesforce" xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core
+            http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/salesforce
+            http://www.mulesoft.org/schema/mule/salesforce/current/mule-salesforce.xsd
+        http://www.mulesoft.org/schema/mule/db
+            http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+        http://www.mulesoft.org/schema/mule/ee/core
+            http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/azure-service-bus-messaging http://www.mulesoft.org/schema/mule/azure-service-bus-messaging/current/mule-azure-service-bus-messaging.xsd
+http://www.mulesoft.org/schema/mule/salesforce-pub-sub http://www.mulesoft.org/schema/mule/salesforce-pub-sub/current/mule-salesforce-pub-sub.xsd
+http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd
+http://www.mulesoft.org/schema/mule/ee/tracking http://www.mulesoft.org/schema/mule/ee/tracking/current/mule-tracking-ee.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd">
+
+	<configuration-properties doc:name="Configuration properties" doc:id="0d9fc6c1-30ff-4398-bb99-6b3b8e0cdb44" file="config.properties" />
+	<azure-service-bus-messaging:config name="Azure_Service_Bus_Messaging_Connector_Config" doc:name="Azure Service Bus Messaging Connector Config" doc:id="26d351c4-2a4c-4e9b-9ce6-ffb5e09ad40b" sendCorrelationStrategy="ALWAYS">
+		<azure-service-bus-messaging:aad-connection namespace="${AZURE_NAMESPACE}" tenantId="${AZURE_TENANT_ID}" clientId="${AZURE_CLIENT_ID}" clientSecret="${AZURE_CLIENT_SECRET}" >
+			<reconnection >
+				<reconnect frequency="5000" count="4" />
+			</reconnection>
+		</azure-service-bus-messaging:aad-connection>
+	</azure-service-bus-messaging:config>
+	
+    <!-- Salesforce Connection — credentials from system properties (-DSF_USERNAME=...) -->
+    <salesforce:sfdc-config name="Salesforce_Config">
+        <salesforce:basic-connection
+            username="${SF_USERNAME}"
+            password="${SF_PASSWORD}"
+            securityToken="${SF_SECURITY_TOKEN}" url="${SF_AUTHORIZATION_URL}"/>
+    </salesforce:sfdc-config>
+    
+    <salesforce-pub-sub:pubsub-config name="Salesforce_PubSub_Config" doc:name="Salesforce PubSub Config" doc:id="e13e224d-fa5c-45e7-8ecf-92d14f293364" >
+		<salesforce-pub-sub:basic-connection username="${SF_USERNAME}"
+            password="${SF_PASSWORD}"
+            securityToken="${SF_SECURITY_TOKEN}" url="${SF_AUTHORIZATION_URL}" />
+	</salesforce-pub-sub:pubsub-config>
+
+    <!-- SQLite Database Connection -->
+    <db:config name="SQLite_Config">
+        <db:generic-connection
+            driverClassName="org.sqlite.JDBC"
+            url="jdbc:sqlite:${DB_PATH}"/>
+    </db:config>
+
+    <!-- ============================================================
+         CDC Flow: Subscribe to LeadChangeEvent
+         ============================================================ -->
+	<os:object-store name="idempotent_key_persistent_object_store" doc:name="Object store" doc:id="9ae91b67-1343-4c22-b8a7-dea71f8dd103" />
+	<http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="596f77bb-083b-4164-a5b4-8011a8aa7920" >
+		<http:listener-connection host="0.0.0.0" port="8083" />
+	</http:listener-config>
+	<flow name="salesforce-lead-cdc-flow" maxConcurrency="${MAX_CONCURRENCY}">
+
+        <!-- Subscribe to Salesforce Lead CDC channel — replayOption: ONLY_NEW | ALL | FROM_REPLAY_ID -->
+        <salesforce:replay-channel-listener
+            config-ref="Salesforce_Config"
+            streamingChannel="/data/LeadChangeEvent"
+            replayOption="ONLY_NEW" autoReplay="true"/>
+		<set-variable value="#[output json --- payload]" doc:name="originalPayload" doc:id="66de6929-f06a-4542-9d83-7acd43c03ec6" variableName="originalPayload"/>
+		<azure-service-bus-messaging:send destinationName="sf-lead-sync-events-archive-queue" doc:name="sf-lead-sync-events-archive-queue" doc:id="0ddadb88-ef8f-493d-a783-b57896894453" config-ref="Azure_Service_Bus_Messaging_Connector_Config">
+			<azure-service-bus-messaging:body><![CDATA[#[vars.originalPayload]]]></azure-service-bus-messaging:body>
+		</azure-service-bus-messaging:send>
+		<set-variable value="#[now()]" doc:name="initialTimestamp" doc:id="e45de63f-87b0-4993-8d1f-b5473a33290d" variableName="initialTimestamp"/>
+		<until-successful maxRetries="5" doc:name="Until Successful, if any object store limits" doc:id="c1da647d-9ce3-4fb3-adba-1e7683488038" millisBetweenRetries="5000">
+			<idempotent-message-validator doc:name="Idempotent Message Validator" doc:id="4ab066c3-49da-4041-82fc-65924752d282" idExpression="#[payload.data.event.replayId as String]" objectStore="idempotent_key_persistent_object_store" />
+		</until-successful>
+		<logger level="INFO" message="#[output text --- 'CDC event received - changeType: ' ++ payload.data.payload.ChangeEventHeader.changeType]" doc:name="CDC Event Received"/>
+		<logger level="INFO" doc:name="payload, attr" doc:id="15a92d1c-160e-4095-bdae-372ddabb53b5" message="#[output json --- {payload: payload, attibutes: attributes}]"/>
+
+        <!-- Transform CDC payload to array — one entry per recordId -->
+		<ee:transform doc:id="064270e2-f16c-4b08-99a9-dca013b70d7e">
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var header = payload.data.payload.ChangeEventHeader
+var lead   = payload.data.payload
+var replayId = payload.data.event.replayId as String
+---
+header.recordIds map (recordId) -> {
+	sfId: recordId,
+	firstName: lead.Name.FirstName,
+	lastName: lead.Name.LastName,
+	email: lead.Email,
+	phone: lead.Phone,
+	company: lead.Company,
+	status: lead.Status,
+	leadSource: lead.LeadSource,
+	changeType: header.changeType,
+	changeOrigin: header.changeOrigin,
+	replayId: replayId,
+	createdDate: lead.CreatedDate,
+	lastModifiedDate: lead.LastModifiedDate
+}]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+
+        <!-- Iterate over each recordId in the batch -->
+        <foreach doc:name="For Each recordId">
+            <!-- Upsert or Delete Lead in SQLite -->
+            <choice>
+                <when expression="#[payload.changeType == 'CREATE' or payload.changeType == 'UPDATE']">
+                    <db:insert config-ref="SQLite_Config" target="insertResponse">
+                        <db:sql><![CDATA[INSERT INTO leads (
+                                sf_id, first_name, last_name, email, phone, company,
+                                status, lead_source, change_type, change_origin,
+                                replay_id, created_date, last_modified_date
+                            ) VALUES (
+                                :sfId, :firstName, :lastName, :email, :phone, :company,
+                                :status, :leadSource, :changeType, :changeOrigin,
+                                :replayId, :createdDate, :lastModifiedDate
+                            )
+                            ON CONFLICT(sf_id) DO UPDATE SET
+                                first_name         = COALESCE(excluded.first_name,         first_name),
+                                last_name          = COALESCE(excluded.last_name,          last_name),
+                                email              = COALESCE(excluded.email,              email),
+                                phone              = COALESCE(excluded.phone,              phone),
+                                company            = COALESCE(excluded.company,            company),
+                                status             = COALESCE(excluded.status,             status),
+                                lead_source        = COALESCE(excluded.lead_source,        lead_source),
+                                change_type        = excluded.change_type,
+                                change_origin      = excluded.change_origin,
+                                replay_id          = excluded.replay_id,
+                                last_modified_date = COALESCE(excluded.last_modified_date, last_modified_date),
+                                synced_at          = datetime('now')
+                            WHERE excluded.last_modified_date > leads.last_modified_date
+                               OR (excluded.last_modified_date = leads.last_modified_date
+                                   AND CAST(excluded.replay_id AS INTEGER) > CAST(leads.replay_id AS INTEGER))
+                               OR leads.last_modified_date IS NULL
+                        ]]></db:sql>
+                        <db:input-parameters><![CDATA[#[payload]]]></db:input-parameters>
+                    </db:insert>
+                    <logger level="INFO"
+                        message="#[output text --- 'Lead upserted - sfId: ' ++ payload.sfId ++ ' changeType: ' ++ payload.changeType ++ ' affected rows: ' ++ vars.insertResponse.affectedRows]"/>
+                </when>
+                <when expression="#[payload.changeType == 'DELETE']">
+                    <db:delete config-ref="SQLite_Config" target="deleteResponse">
+                        <db:sql><![CDATA[DELETE FROM leads WHERE sf_id = :sfId]]></db:sql>
+                        <db:input-parameters><![CDATA[#[{ sfId: payload.sfId }]]]></db:input-parameters>
+                    </db:delete>
+                    <logger level="INFO" message="Lead deleted - sfId: #[payload.sfId] - affected rows: #[vars.deleteResponse]"/>
+                </when>
+                <otherwise>
+                    <logger level="WARN" message="#[output text --- 'Unknown changeType: ' ++ payload.changeType ++ ' - sfId: ' ++ payload.sfId]"/>
+                </otherwise>
+            </choice>
+        </foreach>
+		<error-handler>
+            <on-error-continue type="ANY">
+                <logger level="ERROR"
+                    message="#[output text --- 'Error processing CDC event: ' ++ error.description]"/>
+				<ee:transform doc:name="Transform Message" doc:id="9dfa9bd0-dfd4-400c-8e6f-2db0c6495d51" >
+					<ee:message >
+						<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+
+var errorType = error.errorType.namespace as String default "" ++ ":" ++ error.errorType.identifier as String default ""
+
+var retryableErrors = [
+    "HTTP:CONNECTIVITY",
+    "DB:CONNECTIVITY",
+    "SALESFORCE:CONNECTIVITY",
+    "AZURE-SERVICE-BUS-MESSAGING:CONNECTIVITY",
+    "AZURE-SERVICE-BUS-MESSAGING:SERVICE_UNAVAILABLE",
+    "AZURE-SERVICE-BUS-MESSAGING:QUOTA_EXCEEDED"
+]
+---
+{
+  "originalMessageId": vars.messageId,
+  "correlationId": correlationId,
+  "transactionId": vars.transactionId,
+  "application": p("app.name"),
+  "environment": p("mule.env"),
+  "flowName": flow.name,
+  "initialTimestamp": vars.initialTimestamp,
+  "retryable": retryableErrors contains errorType,
+  "host": server.host,
+  "error": {
+    "type": errorType,
+    "failingComponent": error.failingComponent,
+    "timestamp": now(),
+    "description": error.description,
+    "detail": error.detailedDescription,
+  },
+  "originalPayload": vars.originalPayload
+}
+]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+				<azure-service-bus-messaging:send doc:name="sf-lead-sync-errors-queue" doc:id="2d7d9c10-9fc8-423e-9082-8d9b20542fe8" config-ref="Azure_Service_Bus_Messaging_Connector_Config" destinationName="sf-lead-sync-errors-queue"/>
+            
+</on-error-continue>
+        </error-handler>
+    </flow>
+	<flow name="fetch-leads" doc:id="44aaf3cd-affa-495b-8aba-b1d8db81fec5" >
+		<http:listener doc:name="/leads" doc:id="f4a08b3f-9b74-4031-a484-1d242684c10b" path="/leads" config-ref="HTTP_Listener_config" allowedMethods="GET"/>
+		<db:select doc:name="Select" doc:id="5cd3b3fb-fcd1-4daa-9835-61a3f964369f" config-ref="SQLite_Config">
+			<db:sql ><![CDATA[SELECT id, sf_id, first_name, last_name, email, phone, company, status, lead_source, change_type, change_origin, replay_id, created_date, last_modified_date, synced_at
+FROM leads]]></db:sql>
+		</db:select>
+		<ee:transform doc:name="Transform Message" doc:id="72aa403e-a34e-4601-8a23-314cd3e4402f" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+payload]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+	</flow>
+
+
+</mule>

@@ -1,0 +1,39 @@
+{
+  "data": {
+    "schema": "IawqHtF4OtEf5mDxAZ0R_A",
+    "payload": {
+      "LastModifiedDate": {
+        "$date": "2026-03-16T21:32:31.000Z"
+      },
+      "Status": "Closed - Not Converted",
+      "ChangeEventHeader": {
+        "commitNumber": {
+          "$numberLong": "1773696751765225473"
+        },
+        "commitUser": "005gL00000BNrrhQAD",
+        "sequenceNumber": 1,
+        "entityName": "Lead",
+        "changeType": "UPDATE",
+        "changedFields": [
+          "Status",
+          "LastModifiedDate"
+        ],
+        "changeOrigin": "com/salesforce/api/soap/66.0;client=SfdcInternalAPI/",
+        "transactionKey": "00012257-2fa4-d817-7023-da1208161d13",
+        "commitTimestamp": {
+          "$numberLong": "1773696751000"
+        },
+        "recordIds": [
+          "00QgL00000Bc8HZUAZ"
+        ]
+      }
+    },
+    "event": {
+      "replayId": 843170
+    }
+  },
+  "channel": "/data/LeadChangeEvent",
+  "timestamp": {
+    "$date": "2026-03-16T21:32:32.221Z"
+  }
+}

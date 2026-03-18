@@ -1,0 +1,11 @@
+# Copy this file to config.properties and fill in your values
+SF_USERNAME=your-salesforce-username@example.com
+SF_PASSWORD=your-salesforce-password
+SF_SECURITY_TOKEN=your-salesforce-security-token
+SF_AUTHORIZATION_URL=https://your-org.my.salesforce.com/services/Soap/u/64.0
+DB_PATH=C:\\path\\to\\your\\leads.db
+AZURE_NAMESPACE=your-azure-service-bus-namespace
+AZURE_TENANT_ID=your-azure-tenant-id
+AZURE_CLIENT_ID=your-azure-client-id
+AZURE_CLIENT_SECRET=your-azure-client-secret
+MAX_CONCURRENCY=5

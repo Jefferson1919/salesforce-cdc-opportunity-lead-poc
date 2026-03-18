@@ -1,0 +1,21 @@
+# Secrets
+.env
+src/main/resources/config.properties
+
+# Build output
+target/
+
+# Mule runtime state
+.mule/
+
+# IDE
+.classpath
+.project
+.vscode/
+.tooling-project
+
+# Claude context
+.claude/
+
+# Windows
+%HOME%/
