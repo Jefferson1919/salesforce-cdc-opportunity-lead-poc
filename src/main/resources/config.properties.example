@@ -8,6 +8,7 @@ AZURE_NAMESPACE=your-azure-service-bus-namespace
 AZURE_TENANT_ID=your-azure-tenant-id
 AZURE_CLIENT_ID=your-azure-client-id
 AZURE_CLIENT_SECRET=your-azure-client-secret
+https.port=8081
 MAX_CONCURRENCY=5
 OPPORTUNITY_EVENTS_ARCHIVE_QUEUE=sf-opportunity-sync-events-archive-queue
 OPPORTUNITY_ERRORS_QUEUE=sf-opportunity-sync-errors-queue

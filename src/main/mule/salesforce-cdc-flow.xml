@@ -55,7 +55,7 @@ http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/htt
 	<os:object-store name="idempotent_key_persistent_object_store" doc:name="Object store" doc:id="9ae91b67-1343-4c22-b8a7-dea71f8dd103" />
 	<os:object-store name="idempotent_key_opportunity_persistent_object_store" doc:name="Opportunity Object Store" doc:id="b3c82f41-5d2e-4a7c-a1f0-e9d23c6a0174" />
 	<http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="596f77bb-083b-4164-a5b4-8011a8aa7920" >
-		<http:listener-connection host="0.0.0.0" port="8083" />
+		<http:listener-connection host="0.0.0.0" port="${https.port}" />
 	</http:listener-config>
 	<flow name="salesforce-lead-cdc-flow" maxConcurrency="${MAX_CONCURRENCY}">
 
@@ -352,7 +352,6 @@ var retryableErrors = [
 </on-error-continue>
         </error-handler>
     </flow>
-
 	<flow name="fetch-leads" doc:id="44aaf3cd-affa-495b-8aba-b1d8db81fec5" >
 		<http:listener doc:name="/leads" doc:id="f4a08b3f-9b74-4031-a484-1d242684c10b" path="/leads" config-ref="HTTP_Listener_config" allowedMethods="GET"/>
 		<db:select doc:name="Select" doc:id="5cd3b3fb-fcd1-4daa-9835-61a3f964369f" config-ref="SQLite_Config">
