@@ -63,49 +63,82 @@ Salesforce (LeadChangeEvent)          Salesforce (OpportunityChangeEvent)
 
 ```mermaid
 sequenceDiagram
-    actor User as Salesforce User
+    actor SFUser as Salesforce User
+    actor Client as HTTP Client
     participant SF  as Salesforce
-    participant ML  as MuleSoft CDC Flow
+    participant ML  as MuleSoft App
     participant OS  as Object Store<br/>(idempotency)
     participant ASB as Azure Service Bus
     participant DB  as SQLite
 
-    User->>SF: Create / Update / Delete Lead
-
-    SF-->>ML: LeadChangeEvent<br/>(replayId, recordIds[], changedFields)
-
-    ML->>ASB: Publish raw event<br/>→ sf-lead-sync-events-archive-queue
-
-    ML->>OS: Check replayId (idempotent validator)
-    alt Already processed
-        OS-->>ML: Duplicate — discard
-    else New event
-        OS-->>ML: OK — continue
-
-        ML->>ML: Transform payload<br/>map recordIds[] → [{sfId, fields...}]
-
-        loop For each recordId in batch
-            alt changeType == CREATE or UPDATE
-                ML->>DB: INSERT ... ON CONFLICT(sf_id) DO UPDATE<br/>SET ... WHERE last_modified_date newer<br/>OR (same date AND replayId larger)
-                DB-->>ML: affectedRows
-            else changeType == DELETE
-                ML->>DB: DELETE FROM leads WHERE sf_id = :sfId
-                DB-->>ML: affectedRows
-            else unknown changeType
-                ML->>ML: WARN log — skip
+    rect rgb(220, 235, 255)
+        Note over SF,DB: Lead Flow
+        SFUser->>SF: Create / Update / Delete Lead
+        SF-->>ML: LeadChangeEvent<br/>(replayId, recordIds[], changedFields)
+        ML->>ASB: Publish raw event<br/>→ sf-lead-sync-events-archive-queue
+        ML->>OS: Check replayId (leads store)
+        alt Already processed
+            OS-->>ML: Duplicate — discard
+        else New event
+            OS-->>ML: OK — continue
+            ML->>ML: Transform: map recordIds[] → [{sfId, fields...}]
+            loop For each recordId in batch
+                alt changeType == CREATE or UPDATE
+                    ML->>DB: INSERT ... ON CONFLICT(sf_id) DO UPDATE<br/>(leads) ordering guard on last_modified_date / replayId
+                    DB-->>ML: affectedRows
+                else changeType == DELETE
+                    ML->>DB: DELETE FROM leads WHERE sf_id = :sfId
+                    DB-->>ML: affectedRows
+                else unknown changeType
+                    ML->>ML: WARN log — skip
+                end
             end
+        end
+        opt Any unhandled error
+            ML->>ASB: Publish error envelope<br/>→ sf-lead-sync-errors-queue
         end
     end
 
-    opt Any unhandled error
-        ML->>ASB: Publish error envelope<br/>→ sf-lead-sync-errors-queue
+    rect rgb(220, 255, 235)
+        Note over SF,DB: Opportunity Flow
+        SFUser->>SF: Create / Update / Delete Opportunity
+        SF-->>ML: OpportunityChangeEvent<br/>(replayId, recordIds[], changedFields)
+        ML->>ASB: Publish raw event<br/>→ sf-opportunity-sync-events-archive-queue
+        ML->>OS: Check replayId (opportunities store)
+        alt Already processed
+            OS-->>ML: Duplicate — discard
+        else New event
+            OS-->>ML: OK — continue
+            ML->>ML: Transform: map recordIds[] → [{sfId, fields...}]
+            loop For each recordId in batch
+                alt changeType == CREATE or UPDATE
+                    ML->>DB: INSERT ... ON CONFLICT(sf_id) DO UPDATE<br/>(opportunities) ordering guard on last_modified_date / replayId
+                    DB-->>ML: affectedRows
+                else changeType == DELETE
+                    ML->>DB: DELETE FROM opportunities WHERE sf_id = :sfId
+                    DB-->>ML: affectedRows
+                else unknown changeType
+                    ML->>ML: WARN log — skip
+                end
+            end
+        end
+        opt Any unhandled error
+            ML->>ASB: Publish error envelope<br/>→ sf-opportunity-sync-errors-queue
+        end
     end
 
-    actor Client as HTTP Client
-    Client->>ML: GET http://localhost:8083/leads
-    ML->>DB: SELECT * FROM leads
-    DB-->>ML: rows
-    ML-->>Client: 200 OK — JSON array
+    rect rgb(255, 248, 220)
+        Note over Client,DB: HTTP Query API
+        Client->>ML: GET http://localhost:8083/leads
+        ML->>DB: SELECT * FROM leads
+        DB-->>ML: rows
+        ML-->>Client: 200 OK — JSON array
+
+        Client->>ML: GET http://localhost:8083/opportunities
+        ML->>DB: SELECT * FROM opportunities
+        DB-->>ML: rows
+        ML-->>Client: 200 OK — JSON array
+    end
 ```
 
 ---
