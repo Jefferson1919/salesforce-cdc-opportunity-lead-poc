@@ -53,6 +53,7 @@ http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/htt
          CDC Flow: Subscribe to LeadChangeEvent
          ============================================================ -->
 	<os:object-store name="idempotent_key_persistent_object_store" doc:name="Object store" doc:id="9ae91b67-1343-4c22-b8a7-dea71f8dd103" />
+	<os:object-store name="idempotent_key_opportunity_persistent_object_store" doc:name="Opportunity Object Store" doc:id="b3c82f41-5d2e-4a7c-a1f0-e9d23c6a0174" />
 	<http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="596f77bb-083b-4164-a5b4-8011a8aa7920" >
 		<http:listener-connection host="0.0.0.0" port="8083" />
 	</http:listener-config>
@@ -198,6 +199,160 @@ var retryableErrors = [
 </on-error-continue>
         </error-handler>
     </flow>
+	<!-- ============================================================
+         CDC Flow: Subscribe to OpportunityChangeEvent
+         ============================================================ -->
+	<flow name="salesforce-opportunity-cdc-flow" maxConcurrency="${MAX_CONCURRENCY}">
+
+        <!-- Subscribe to Salesforce Opportunity CDC channel -->
+        <salesforce:replay-channel-listener
+            config-ref="Salesforce_Config"
+            streamingChannel="/data/OpportunityChangeEvent"
+            replayOption="ONLY_NEW" autoReplay="true"/>
+		<set-variable value="#[output json --- payload]" doc:name="originalPayload" doc:id="a1b2c3d4-0001-4001-8001-000000000001" variableName="originalPayload"/>
+		<azure-service-bus-messaging:send destinationName="${OPPORTUNITY_EVENTS_ARCHIVE_QUEUE}" doc:name="${OPPORTUNITY_EVENTS_ARCHIVE_QUEUE}" doc:id="a1b2c3d4-0001-4001-8001-000000000002" config-ref="Azure_Service_Bus_Messaging_Connector_Config">
+			<azure-service-bus-messaging:body><![CDATA[#[vars.originalPayload]]]></azure-service-bus-messaging:body>
+		</azure-service-bus-messaging:send>
+		<set-variable value="#[now()]" doc:name="initialTimestamp" doc:id="a1b2c3d4-0001-4001-8001-000000000003" variableName="initialTimestamp"/>
+		<until-successful maxRetries="5" doc:name="Until Successful, if any object store limits" doc:id="a1b2c3d4-0001-4001-8001-000000000004" millisBetweenRetries="5000">
+			<idempotent-message-validator doc:name="Idempotent Message Validator" doc:id="a1b2c3d4-0001-4001-8001-000000000005" idExpression="#[payload.data.event.replayId as String]" objectStore="idempotent_key_opportunity_persistent_object_store" />
+		</until-successful>
+		<logger level="INFO" message="#[output text --- 'CDC event received - changeType: ' ++ payload.data.payload.ChangeEventHeader.changeType]" doc:name="CDC Event Received"/>
+		<logger level="INFO" doc:name="payload, attr" doc:id="a1b2c3d4-0001-4001-8001-000000000006" message="#[output json --- {payload: payload, attibutes: attributes}]"/>
+
+        <!-- Transform CDC payload to array — one entry per recordId -->
+		<ee:transform doc:id="a1b2c3d4-0001-4001-8001-000000000007">
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var header = payload.data.payload.ChangeEventHeader
+var opp    = payload.data.payload
+var replayId = payload.data.event.replayId as String
+---
+header.recordIds map (recordId) -> {
+	sfId:            recordId,
+	opportunityName: opp.Name,
+	amount:          opp.Amount,
+	stageName:       opp.StageName,
+	closeDate:       opp.CloseDate,
+	probability:     opp.Probability,
+	accountId:       opp.AccountId,
+	ownerId:         opp.OwnerId,
+	"type":          opp.Type,
+	leadSource:      opp.LeadSource,
+	currencyIsoCode: opp.CurrencyIsoCode,
+	description:     opp.Description,
+	changeType:      header.changeType,
+	changeOrigin:    header.changeOrigin,
+	replayId:        replayId,
+	createdDate:     opp.CreatedDate,
+	lastModifiedDate: opp.LastModifiedDate
+}]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+
+        <!-- Iterate over each recordId in the batch -->
+        <foreach doc:name="For Each recordId">
+            <!-- Upsert or Delete Opportunity in SQLite -->
+            <choice>
+                <when expression="#[payload.changeType == 'CREATE' or payload.changeType == 'UPDATE']">
+                    <db:insert config-ref="SQLite_Config" target="insertResponse">
+                        <db:sql><![CDATA[INSERT INTO opportunities (
+                                sf_id, opportunity_name, amount, stage_name, close_date, probability,
+                                account_id, owner_id, type, lead_source, currency_iso_code, description,
+                                change_type, change_origin, replay_id, created_date, last_modified_date
+                            ) VALUES (
+                                :sfId, :opportunityName, :amount, :stageName, :closeDate, :probability,
+                                :accountId, :ownerId, :type, :leadSource, :currencyIsoCode, :description,
+                                :changeType, :changeOrigin, :replayId, :createdDate, :lastModifiedDate
+                            )
+                            ON CONFLICT(sf_id) DO UPDATE SET
+                                opportunity_name   = COALESCE(excluded.opportunity_name,   opportunity_name),
+                                amount             = COALESCE(excluded.amount,             amount),
+                                stage_name         = COALESCE(excluded.stage_name,         stage_name),
+                                close_date         = COALESCE(excluded.close_date,         close_date),
+                                probability        = COALESCE(excluded.probability,        probability),
+                                account_id         = COALESCE(excluded.account_id,         account_id),
+                                owner_id           = COALESCE(excluded.owner_id,           owner_id),
+                                type               = COALESCE(excluded.type,               type),
+                                lead_source        = COALESCE(excluded.lead_source,        lead_source),
+                                currency_iso_code  = COALESCE(excluded.currency_iso_code,  currency_iso_code),
+                                description        = COALESCE(excluded.description,        description),
+                                change_type        = excluded.change_type,
+                                change_origin      = excluded.change_origin,
+                                replay_id          = excluded.replay_id,
+                                last_modified_date = COALESCE(excluded.last_modified_date, last_modified_date),
+                                synced_at          = datetime('now')
+                            WHERE excluded.last_modified_date > opportunities.last_modified_date
+                               OR (excluded.last_modified_date = opportunities.last_modified_date
+                                   AND CAST(excluded.replay_id AS INTEGER) > CAST(opportunities.replay_id AS INTEGER))
+                               OR opportunities.last_modified_date IS NULL
+                        ]]></db:sql>
+                        <db:input-parameters><![CDATA[#[payload]]]></db:input-parameters>
+                    </db:insert>
+                    <logger level="INFO"
+                        message="#[output text --- 'Opportunity upserted - sfId: ' ++ payload.sfId ++ ' changeType: ' ++ payload.changeType ++ ' affected rows: ' ++ vars.insertResponse.affectedRows]"/>
+                </when>
+                <when expression="#[payload.changeType == 'DELETE']">
+                    <db:delete config-ref="SQLite_Config" target="deleteResponse">
+                        <db:sql><![CDATA[DELETE FROM opportunities WHERE sf_id = :sfId]]></db:sql>
+                        <db:input-parameters><![CDATA[#[{ sfId: payload.sfId }]]]></db:input-parameters>
+                    </db:delete>
+                    <logger level="INFO" message="Opportunity deleted - sfId: #[payload.sfId] - affected rows: #[vars.deleteResponse]"/>
+                </when>
+                <otherwise>
+                    <logger level="WARN" message="#[output text --- 'Unknown changeType: ' ++ payload.changeType ++ ' - sfId: ' ++ payload.sfId]"/>
+                </otherwise>
+            </choice>
+        </foreach>
+		<error-handler>
+            <on-error-continue type="ANY">
+                <logger level="ERROR"
+                    message="#[output text --- 'Error processing Opportunity CDC event: ' ++ error.description]"/>
+				<ee:transform doc:name="Transform Message" doc:id="a1b2c3d4-0001-4001-8001-000000000008" >
+					<ee:message >
+						<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+
+var errorType = error.errorType.namespace as String default "" ++ ":" ++ error.errorType.identifier as String default ""
+
+var retryableErrors = [
+    "HTTP:CONNECTIVITY",
+    "DB:CONNECTIVITY",
+    "SALESFORCE:CONNECTIVITY",
+    "AZURE-SERVICE-BUS-MESSAGING:CONNECTIVITY",
+    "AZURE-SERVICE-BUS-MESSAGING:SERVICE_UNAVAILABLE",
+    "AZURE-SERVICE-BUS-MESSAGING:QUOTA_EXCEEDED"
+]
+---
+{
+  "originalMessageId": vars.messageId,
+  "correlationId": correlationId,
+  "transactionId": vars.transactionId,
+  "application": p("app.name"),
+  "environment": p("mule.env"),
+  "flowName": flow.name,
+  "initialTimestamp": vars.initialTimestamp,
+  "retryable": retryableErrors contains errorType,
+  "host": server.host,
+  "error": {
+    "type": errorType,
+    "failingComponent": error.failingComponent,
+    "timestamp": now(),
+    "description": error.description,
+    "detail": error.detailedDescription,
+  },
+  "originalPayload": vars.originalPayload
+}
+]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+				<azure-service-bus-messaging:send doc:name="${OPPORTUNITY_ERRORS_QUEUE}" doc:id="a1b2c3d4-0001-4001-8001-000000000009" config-ref="Azure_Service_Bus_Messaging_Connector_Config" destinationName="${OPPORTUNITY_ERRORS_QUEUE}"/>
+
+</on-error-continue>
+        </error-handler>
+    </flow>
+
 	<flow name="fetch-leads" doc:id="44aaf3cd-affa-495b-8aba-b1d8db81fec5" >
 		<http:listener doc:name="/leads" doc:id="f4a08b3f-9b74-4031-a484-1d242684c10b" path="/leads" config-ref="HTTP_Listener_config" allowedMethods="GET"/>
 		<db:select doc:name="Select" doc:id="5cd3b3fb-fcd1-4daa-9835-61a3f964369f" config-ref="SQLite_Config">
@@ -214,5 +369,22 @@ payload]]></ee:set-payload>
 		</ee:transform>
 	</flow>
 
+	<flow name="fetch-opportunities" doc:id="a1b2c3d4-0001-4001-8001-000000000010" >
+		<http:listener doc:name="/opportunities" doc:id="a1b2c3d4-0001-4001-8001-000000000011" path="/opportunities" config-ref="HTTP_Listener_config" allowedMethods="GET"/>
+		<db:select doc:name="Select" doc:id="a1b2c3d4-0001-4001-8001-000000000012" config-ref="SQLite_Config">
+			<db:sql><![CDATA[SELECT id, sf_id, opportunity_name, amount, stage_name, close_date, probability,
+       account_id, owner_id, type, lead_source, currency_iso_code, description,
+       change_type, change_origin, replay_id, created_date, last_modified_date, synced_at
+FROM opportunities]]></db:sql>
+		</db:select>
+		<ee:transform doc:name="Transform Message" doc:id="a1b2c3d4-0001-4001-8001-000000000013" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+payload]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+	</flow>
 
 </mule>

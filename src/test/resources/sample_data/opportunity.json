@@ -1,0 +1,35 @@
+{
+  "data": {
+    "schema": "OpportunityChangeEventSchema",
+    "payload": {
+      "Name": "Enterprise Renewal FY26",
+      "Amount": 125000.0,
+      "StageName": "Proposal/Price Quote",
+      "CloseDate": "2026-04-30",
+      "Probability": 70.0,
+      "AccountId": "001gL00001ABCDeQAL",
+      "OwnerId": "005gL00000BNrrhQAD",
+      "Type": "Existing Customer - Upgrade",
+      "LeadSource": "Partner Referral",
+      "CurrencyIsoCode": "USD",
+      "Description": "Strategic renewal for enterprise tier.",
+      "CreatedDate": { "$date": "2026-03-19T11:10:00.000Z" },
+      "LastModifiedDate": { "$date": "2026-03-19T11:15:00.000Z" },
+      "ChangeEventHeader": {
+        "commitNumber": { "$numberLong": "1774000000000000001" },
+        "commitUser": "005gL00000BNrrhQAD",
+        "sequenceNumber": 1,
+        "entityName": "Opportunity",
+        "changeType": "UPDATE",
+        "changedFields": ["StageName", "Amount", "LastModifiedDate"],
+        "changeOrigin": "com/salesforce/api/soap/66.0;client=SfdcInternalAPI/",
+        "transactionKey": "11112222-3333-4444-5555-666677778888",
+        "commitTimestamp": { "$numberLong": "1774000000000" },
+        "recordIds": ["006gL00000XYZAbQAL"]
+      }
+    },
+    "event": { "replayId": 950001 }
+  },
+  "channel": "/data/OpportunityChangeEvent",
+  "timestamp": { "$date": "2026-03-19T11:15:01.000Z" }
+}
