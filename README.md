@@ -17,6 +17,7 @@ A proof-of-concept MuleSoft 4 application that subscribes to **Salesforce Change
 - [API Reference](#api-reference)
 - [Database Schema](#database-schema)
 - [Connector Versions](#connector-versions)
+- [Replay ID & Object Store Behaviour](#replay-id--object-store-behaviour)
 - [Known Issues & Workarounds](#known-issues--workarounds)
 
 ---
@@ -531,6 +532,51 @@ GET http://localhost:8083/opportunities
 | mule-db-connector | 1.15.0 |
 | mule-objectstore-connector | 1.2.5 |
 | sqlite-jdbc | 3.51.3.0 |
+
+---
+
+## Replay ID & Object Store Behaviour
+
+CDC events are consumed via the **Streaming API** through the **Salesforce Connector** (not the Pub/Sub API). The following replay settings are configured on the connector:
+
+| Option | Value |
+|---|---|
+| Replay Option | `ONLY_NEW` |
+| Replay failed events if any or resume from last replay ID | `true` |
+
+With `true` set on the second option, the connector uses **Object Store v2** to persist `replayId` values across restarts. The Streaming API is push-based (CometD long-polling): the connector opens a persistent subscription to the CDC channel and Salesforce pushes events to it. The `replayId` decision logic below is applied once, **at subscription time** — i.e., on startup or after a reconnect:
+
+- **If failed events exist in the Object Store** → resume from the **lowest failed `replayId`**, ensuring those events are reprocessed.
+- **If no failed events exist** → resume from the **last successfully processed `replayId`**, avoiding any gap in the event stream.
+- **If the Object Store is empty or the IDs have expired** → fall back to the configured `Replay Option` value (`ONLY_NEW`).
+
+> IDs stored in the Object Store expire after **72 hours**, after which they are automatically removed. This matches Salesforce's CDC event retention window. See [MuleSoft docs — Processing Events](https://docs.mulesoft.com/salesforce-connector/latest/salesforce-connector-processing-events) for full details.
+
+### Scenario 1 — First production deployment
+
+The Object Store is empty; no `replayId` has been stored yet. The `ONLY_NEW` fallback applies and the subscriber receives only events generated **from that moment onward**. Events that occurred before startup are not delivered, which is the expected behaviour for an initial deployment.
+
+As events are received and processed successfully, their `replayIds` are written to Object Store v2.
+
+### Scenario 2 — Unplanned downtime / application crash (edge case)
+
+If the application becomes unavailable (infrastructure failure, automatic restart, etc.) and the Object Store already contains `replayId` entries, the connector resumes from the **last stored `replayId`** on restart — or from the **lowest failed `replayId`** if any failures were recorded before the outage. The Salesforce broker replays all events that occurred after that reference point, guaranteeing **no message loss** during the downtime window.
+
+> Events older than **72 hours** cannot be replayed. Outages exceeding that window may result in unrecoverable gaps.
+
+### Scenario 3 — Planned redeployment (new release or bug fix)
+
+In an intentional redeploy (new version, hotfix, etc.), the Object Store is preserved across deployments. The behaviour is identical to **Scenario 2**: the connector resumes from the last persisted `replayId` (or the lowest failed one), covering any events that occurred during the deployment gap. If the Object Store has expired or been cleared, the fallback is `ONLY_NEW`.
+
+### Behaviour summary
+
+| Situation | Object Store state | Effective behaviour |
+|---|---|---|
+| First deployment | Empty | `ONLY_NEW` — events from startup onward |
+| Unplanned downtime (restart) | Contains `replayId` entries — no failures | Resume from last successfully processed `replayId` |
+| Unplanned downtime (restart) | Contains `replayId` entries — with failures | Resume from lowest failed `replayId` |
+| Planned redeployment | Contains `replayId` entries | Same as unplanned downtime rules above |
+| Object Store expired or cleared | Empty | Fallback to `ONLY_NEW` |
 
 ---
 
