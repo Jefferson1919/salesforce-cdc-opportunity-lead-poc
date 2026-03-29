@@ -15,6 +15,7 @@
 		<maven.compiler.target>17</maven.compiler.target>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 		<mule.maven.plugin.version>4.7.0</mule.maven.plugin.version>
+		<munit.version>3.7.0</munit.version>
 		<salesforce.connector.version>11.3.3</salesforce.connector.version>
 		<db.connector.version>1.15.0</db.connector.version>
 		<objectstore.connector.version>1.2.2</objectstore.connector.version>
@@ -24,6 +25,34 @@
 
 	<build>
 		<plugins>
+			<plugin>
+				<groupId>com.mulesoft.munit.tools</groupId>
+				<artifactId>munit-maven-plugin</artifactId>
+				<version>${munit.version}</version>
+				<executions>
+					<execution>
+						<id>test</id>
+						<phase>test</phase>
+						<goals>
+							<goal>test</goal>
+							<goal>coverage-report</goal>
+						</goals>
+					</execution>
+				</executions>
+				<configuration>
+					<coverage>
+						<runCoverage>true</runCoverage>
+						<failBuild>true</failBuild>
+						<requiredApplicationCoverage>100</requiredApplicationCoverage>
+						<requiredResourceCoverage>100</requiredResourceCoverage>
+						<requiredFlowCoverage>100</requiredFlowCoverage>
+						<formats>
+							<format>html</format>
+							<format>json</format>
+						</formats>
+					</coverage>
+				</configuration>
+			</plugin>
 			<plugin>
 				<groupId>org.mule.tools.maven</groupId>
 				<artifactId>mule-maven-plugin</artifactId>
@@ -123,6 +152,22 @@
 	</build>
 
 	<dependencies>
+		<!-- MUnit Test Dependencies -->
+		<dependency>
+			<groupId>com.mulesoft.munit</groupId>
+			<artifactId>munit-runner</artifactId>
+			<version>${munit.version}</version>
+			<classifier>mule-plugin</classifier>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>com.mulesoft.munit</groupId>
+			<artifactId>munit-tools</artifactId>
+			<version>${munit.version}</version>
+			<classifier>mule-plugin</classifier>
+			<scope>test</scope>
+		</dependency>
+
 		<!-- Salesforce Connector -->
 		<dependency>
 			<groupId>com.mulesoft.connectors</groupId>

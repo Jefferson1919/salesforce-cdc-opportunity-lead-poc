@@ -1,0 +1,416 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:db="http://www.mulesoft.org/schema/mule/db"
+      xmlns:azure-service-bus-messaging="http://www.mulesoft.org/schema/mule/azure-service-bus-messaging"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core
+            http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/munit
+            http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+        http://www.mulesoft.org/schema/mule/munit-tools
+            http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd
+        http://www.mulesoft.org/schema/mule/db
+            http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+        http://www.mulesoft.org/schema/mule/azure-service-bus-messaging
+            http://www.mulesoft.org/schema/mule/azure-service-bus-messaging/current/mule-azure-service-bus-messaging.xsd">
+
+    <munit:config name="salesforce-opportunity-cdc-flow-test"/>
+
+    <!-- ================================================================
+         TEST 1 — CREATE changeType → deve chamar db:insert
+         Cobre: set-variable(x2), azure:send(archive), until-successful,
+                idempotent-validator, logger(x2), ee:transform, foreach,
+                choice(CREATE branch), db:insert, logger(after insert)
+         ================================================================ -->
+    <munit:test name="test-opportunity-cdc-create"
+                description="Opportunity CDC CREATE: roteia para db:insert (upsert)">
+        <munit:behavior>
+            <munit-tools:mock-when doc:name="Mock Azure archive send"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-opportunity-sync-events-archive-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock idempotent validator"
+                                   processor="mule:idempotent-message-validator">
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock db:insert"
+                                   processor="db:insert">
+                <munit-tools:then-return>
+                    <munit-tools:payload value='#[{ affectedRows: 1 }]'
+                                         mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock Azure errors send (safety)"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-opportunity-sync-errors-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event doc:name="Set Opportunity CDC CREATE event">
+                <munit:payload mediaType="application/java" value='#[{
+                    data: {
+                        schema: "OpportunityChangeEventSchema",
+                        payload: {
+                            Name: "New Enterprise Deal",
+                            Amount: 80000.0,
+                            StageName: "Prospecting",
+                            CloseDate: "2026-06-30",
+                            Probability: 20.0,
+                            AccountId: "001gL00001ABCDeQAL",
+                            OwnerId: "005gL00000BNrrhQAD",
+                            Type: "New Customer",
+                            LeadSource: "Web",
+                            CurrencyIsoCode: "USD",
+                            Description: "New deal for testing CREATE.",
+                            CreatedDate: "2026-03-19T10:00:00.000Z",
+                            LastModifiedDate: "2026-03-19T10:00:00.000Z",
+                            ChangeEventHeader: {
+                                entityName: "Opportunity",
+                                changeType: "CREATE",
+                                changedFields: [],
+                                changeOrigin: "com/salesforce/api/soap/66.0;client=SfdcInternalAPI/",
+                                transactionKey: "aaaabbbb-cccc-dddd-eeee-ffff00001111",
+                                commitTimestamp: 1774000000000,
+                                recordIds: ["006gL00000XYZAbQAL"]
+                            }
+                        },
+                        event: { replayId: 950100 }
+                    },
+                    channel: "/data/OpportunityChangeEvent",
+                    timestamp: "2026-03-19T10:00:01.000Z"
+                }]'/>
+            </munit:set-event>
+            <flow-ref doc:name="Executa salesforce-opportunity-cdc-flow"
+                      name="salesforce-opportunity-cdc-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:verify-call doc:name="db:insert deve ser chamado 1 vez"
+                                     processor="db:insert" times="1"/>
+            <munit-tools:verify-call doc:name="db:delete não deve ser chamado"
+                                     processor="db:delete" times="0"/>
+            <munit-tools:verify-call doc:name="Azure archive send deve ser chamado"
+                                     processor="azure-service-bus-messaging:send" times="1">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-opportunity-sync-events-archive-queue']"/>
+                </munit-tools:with-attributes>
+            </munit-tools:verify-call>
+        </munit:validation>
+    </munit:test>
+
+    <!-- ================================================================
+         TEST 2 — UPDATE changeType → deve chamar db:insert (upsert)
+         Payload baseado no sample_data/opportunity.json (UPDATE event real)
+         ================================================================ -->
+    <munit:test name="test-opportunity-cdc-update"
+                description="Opportunity CDC UPDATE: roteia para db:insert (upsert)">
+        <munit:behavior>
+            <munit-tools:mock-when doc:name="Mock Azure archive send"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-opportunity-sync-events-archive-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock idempotent validator"
+                                   processor="mule:idempotent-message-validator">
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock db:insert"
+                                   processor="db:insert">
+                <munit-tools:then-return>
+                    <munit-tools:payload value='#[{ affectedRows: 1 }]'
+                                         mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock Azure errors send (safety)"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-opportunity-sync-errors-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <!-- Payload fiel ao sample_data/opportunity.json -->
+            <munit:set-event doc:name="Set Opportunity CDC UPDATE event">
+                <munit:payload mediaType="application/java" value='#[{
+                    data: {
+                        schema: "OpportunityChangeEventSchema",
+                        payload: {
+                            Name: "Enterprise Renewal FY26",
+                            Amount: 125000.0,
+                            StageName: "Proposal/Price Quote",
+                            CloseDate: "2026-04-30",
+                            Probability: 70.0,
+                            AccountId: "001gL00001ABCDeQAL",
+                            OwnerId: "005gL00000BNrrhQAD",
+                            Type: "Existing Customer - Upgrade",
+                            LeadSource: "Partner Referral",
+                            CurrencyIsoCode: "USD",
+                            Description: "Strategic renewal for enterprise tier.",
+                            CreatedDate: "2026-03-19T11:10:00.000Z",
+                            LastModifiedDate: "2026-03-19T11:15:00.000Z",
+                            ChangeEventHeader: {
+                                entityName: "Opportunity",
+                                changeType: "UPDATE",
+                                changedFields: ["StageName", "Amount", "LastModifiedDate"],
+                                changeOrigin: "com/salesforce/api/soap/66.0;client=SfdcInternalAPI/",
+                                transactionKey: "11112222-3333-4444-5555-666677778888",
+                                commitTimestamp: 1774000000000,
+                                recordIds: ["006gL00000XYZAbQAL"]
+                            }
+                        },
+                        event: { replayId: 950001 }
+                    },
+                    channel: "/data/OpportunityChangeEvent",
+                    timestamp: "2026-03-19T11:15:01.000Z"
+                }]'/>
+            </munit:set-event>
+            <flow-ref doc:name="Executa salesforce-opportunity-cdc-flow"
+                      name="salesforce-opportunity-cdc-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:verify-call doc:name="db:insert deve ser chamado 1 vez"
+                                     processor="db:insert" times="1"/>
+            <munit-tools:verify-call doc:name="db:delete não deve ser chamado"
+                                     processor="db:delete" times="0"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- ================================================================
+         TEST 3 — DELETE changeType → deve chamar db:delete
+         Cobre: choice(DELETE branch), db:delete, logger(after delete)
+         ================================================================ -->
+    <munit:test name="test-opportunity-cdc-delete"
+                description="Opportunity CDC DELETE: roteia para db:delete">
+        <munit:behavior>
+            <munit-tools:mock-when doc:name="Mock Azure archive send"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-opportunity-sync-events-archive-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock idempotent validator"
+                                   processor="mule:idempotent-message-validator">
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock db:delete"
+                                   processor="db:delete">
+                <munit-tools:then-return>
+                    <munit-tools:payload value='#[{ affectedRows: 1 }]'
+                                         mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock Azure errors send (safety)"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-opportunity-sync-errors-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event doc:name="Set Opportunity CDC DELETE event">
+                <munit:payload mediaType="application/java" value='#[{
+                    data: {
+                        schema: "OpportunityChangeEventSchema",
+                        payload: {
+                            ChangeEventHeader: {
+                                entityName: "Opportunity",
+                                changeType: "DELETE",
+                                changedFields: [],
+                                changeOrigin: "com/salesforce/api/soap/66.0;client=SfdcInternalAPI/",
+                                transactionKey: "99998888-7777-6666-5555-444433332222",
+                                commitTimestamp: 1774001000000,
+                                recordIds: ["006gL00000XYZAbQAL"]
+                            }
+                        },
+                        event: { replayId: 950200 }
+                    },
+                    channel: "/data/OpportunityChangeEvent",
+                    timestamp: "2026-03-19T12:00:00.000Z"
+                }]'/>
+            </munit:set-event>
+            <flow-ref doc:name="Executa salesforce-opportunity-cdc-flow"
+                      name="salesforce-opportunity-cdc-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:verify-call doc:name="db:delete deve ser chamado 1 vez"
+                                     processor="db:delete" times="1"/>
+            <munit-tools:verify-call doc:name="db:insert não deve ser chamado"
+                                     processor="db:insert" times="0"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- ================================================================
+         TEST 4 — changeType desconhecido → deve cair no otherwise (WARN logger)
+         Cobre: choice(otherwise branch), logger(WARN)
+         ================================================================ -->
+    <munit:test name="test-opportunity-cdc-unknown-changetype"
+                description="Opportunity CDC changeType desconhecido: roteia para otherwise (WARN)">
+        <munit:behavior>
+            <munit-tools:mock-when doc:name="Mock Azure archive send"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-opportunity-sync-events-archive-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock idempotent validator"
+                                   processor="mule:idempotent-message-validator">
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock Azure errors send (safety)"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-opportunity-sync-errors-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event doc:name="Set Opportunity CDC UNRECOGNIZED event">
+                <munit:payload mediaType="application/java" value='#[{
+                    data: {
+                        schema: "OpportunityChangeEventSchema",
+                        payload: {
+                            ChangeEventHeader: {
+                                entityName: "Opportunity",
+                                changeType: "UNRECOGNIZED",
+                                changedFields: [],
+                                changeOrigin: "com/salesforce/api/soap/66.0;client=SfdcInternalAPI/",
+                                transactionKey: "ffffeeeedd ddcccc-bbbb-aaaa99998888",
+                                commitTimestamp: 1774002000000,
+                                recordIds: ["006gL00000XYZAbQAL"]
+                            }
+                        },
+                        event: { replayId: 950300 }
+                    },
+                    channel: "/data/OpportunityChangeEvent",
+                    timestamp: "2026-03-19T13:00:00.000Z"
+                }]'/>
+            </munit:set-event>
+            <flow-ref doc:name="Executa salesforce-opportunity-cdc-flow"
+                      name="salesforce-opportunity-cdc-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:verify-call doc:name="db:insert não deve ser chamado"
+                                     processor="db:insert" times="0"/>
+            <munit-tools:verify-call doc:name="db:delete não deve ser chamado"
+                                     processor="db:delete" times="0"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- ================================================================
+         TEST 5 — Erro no archive send → aciona error handler completo
+         Cobre: on-error-continue(logger + ee:transform + azure:send(errors))
+         ================================================================ -->
+    <munit:test name="test-opportunity-cdc-error-handler"
+                description="Opportunity CDC erro no archive: error handler envia para fila de erros">
+        <munit:behavior>
+            <!-- Azure archive send lança erro de conectividade -->
+            <munit-tools:mock-when doc:name="Mock Azure archive send - throw"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-opportunity-sync-events-archive-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-throw>
+                    <munit-tools:error typeId="AZURE-SERVICE-BUS-MESSAGING:CONNECTIVITY"
+                                       description="Simulated Azure connectivity failure"/>
+                </munit-tools:then-throw>
+            </munit-tools:mock-when>
+
+            <!-- Azure errors send retorna sucesso -->
+            <munit-tools:mock-when doc:name="Mock Azure errors send - success"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-opportunity-sync-errors-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event doc:name="Set Opportunity CDC event (qualquer changeType)">
+                <munit:payload mediaType="application/java" value='#[{
+                    data: {
+                        schema: "OpportunityChangeEventSchema",
+                        payload: {
+                            StageName: "Closed Won",
+                            LastModifiedDate: "2026-03-19T14:00:00.000Z",
+                            ChangeEventHeader: {
+                                entityName: "Opportunity",
+                                changeType: "UPDATE",
+                                changedFields: ["StageName"],
+                                changeOrigin: "com/salesforce/api/soap/66.0;client=SfdcInternalAPI/",
+                                transactionKey: "11223344-5566-7788-99aa-bbccddeeff00",
+                                commitTimestamp: 1774003000000,
+                                recordIds: ["006gL00000XYZAbQAL"]
+                            }
+                        },
+                        event: { replayId: 950400 }
+                    },
+                    channel: "/data/OpportunityChangeEvent",
+                    timestamp: "2026-03-19T14:00:01.000Z"
+                }]'/>
+            </munit:set-event>
+            <flow-ref doc:name="Executa salesforce-opportunity-cdc-flow"
+                      name="salesforce-opportunity-cdc-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:verify-call doc:name="Azure errors send deve ser chamado 1 vez"
+                                     processor="azure-service-bus-messaging:send" times="1">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-opportunity-sync-errors-queue']"/>
+                </munit-tools:with-attributes>
+            </munit-tools:verify-call>
+            <munit-tools:verify-call doc:name="db:insert não deve ser chamado"
+                                     processor="db:insert" times="0"/>
+            <munit-tools:verify-call doc:name="db:delete não deve ser chamado"
+                                     processor="db:delete" times="0"/>
+        </munit:validation>
+    </munit:test>
+
+</mule>

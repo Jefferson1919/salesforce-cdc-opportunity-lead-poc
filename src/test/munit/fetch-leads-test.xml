@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:db="http://www.mulesoft.org/schema/mule/db"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core
+            http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/munit
+            http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+        http://www.mulesoft.org/schema/mule/munit-tools
+            http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd
+        http://www.mulesoft.org/schema/mule/db
+            http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd">
+
+    <munit:config name="fetch-leads-test"/>
+
+    <!-- ================================================================
+         TEST 1 — GET /leads com dados → retorna array JSON com leads
+         Cobre: http:listener (fonte ignorada), db:select, ee:transform
+         ================================================================ -->
+    <munit:test name="test-fetch-leads-success"
+                description="GET /leads: retorna array JSON com leads do banco">
+        <munit:behavior>
+            <munit-tools:mock-when doc:name="Mock db:select - retorna 1 lead"
+                                   processor="db:select">
+                <munit-tools:then-return>
+                    <munit-tools:payload mediaType="application/java" value='#[[
+                        {
+                            id: 1,
+                            sf_id: "00QgL00000Bc8HZUAZ",
+                            first_name: "Alice",
+                            last_name: "Souza",
+                            email: "alice@example.com",
+                            phone: "555-1111",
+                            company: "ACME Corp",
+                            status: "Open - Not Contacted",
+                            lead_source: "Web",
+                            change_type: "CREATE",
+                            change_origin: "com/salesforce/api/soap/66.0",
+                            replay_id: "843100",
+                            created_date: "2026-03-16T21:00:00.000Z",
+                            last_modified_date: "2026-03-16T21:00:00.000Z",
+                            synced_at: "2026-03-16T21:00:01.000Z"
+                        }
+                    ]]'/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <!-- Simula request HTTP GET /leads; listener é fonte e é ignorado pelo MUnit -->
+            <munit:set-event doc:name="Set HTTP GET /leads event">
+                <munit:payload value='#[null]' mediaType="application/java"/>
+            </munit:set-event>
+            <flow-ref doc:name="Executa fetch-leads" name="fetch-leads"/>
+        </munit:execution>
+
+        <munit:validation>
+            <!-- Verifica que db:select foi chamado -->
+            <munit-tools:verify-call doc:name="db:select deve ser chamado 1 vez"
+                                     processor="db:select" times="1"/>
+            <!-- Verifica que o payload resultante é um array JSON não nulo -->
+            <munit-tools:assert-that doc:name="Payload deve ser array não nulo"
+                                     expression="#[payload]"
+                                     is="#[MunitTools::notNullValue()]"/>
+            <!-- Verifica que o array contém 1 elemento -->
+            <munit-tools:assert-that doc:name="Array deve conter 1 lead"
+                                     expression="#[sizeOf(payload)]"
+                                     is="#[MunitTools::equalTo(1)]"/>
+            <!-- Verifica campo sf_id do primeiro elemento -->
+            <munit-tools:assert-that doc:name="sf_id do lead deve ser correto"
+                                     expression="#[payload[0].sf_id]"
+                                     is="#[MunitTools::equalTo('00QgL00000Bc8HZUAZ')]"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- ================================================================
+         TEST 2 — GET /leads com banco vazio → retorna array JSON vazio
+         Cobre: ee:transform com lista vazia (path alternativo)
+         ================================================================ -->
+    <munit:test name="test-fetch-leads-empty"
+                description="GET /leads: retorna array JSON vazio quando banco não tem leads">
+        <munit:behavior>
+            <munit-tools:mock-when doc:name="Mock db:select - retorna lista vazia"
+                                   processor="db:select">
+                <munit-tools:then-return>
+                    <munit-tools:payload value='#[[]]' mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event doc:name="Set HTTP GET /leads event (banco vazio)">
+                <munit:payload value='#[null]' mediaType="application/java"/>
+            </munit:set-event>
+            <flow-ref doc:name="Executa fetch-leads" name="fetch-leads"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:verify-call doc:name="db:select deve ser chamado 1 vez"
+                                     processor="db:select" times="1"/>
+            <munit-tools:assert-that doc:name="Payload deve ser array não nulo"
+                                     expression="#[payload]"
+                                     is="#[MunitTools::notNullValue()]"/>
+            <munit-tools:assert-that doc:name="Array deve estar vazio"
+                                     expression="#[sizeOf(payload)]"
+                                     is="#[MunitTools::equalTo(0)]"/>
+        </munit:validation>
+    </munit:test>
+
+</mule>

@@ -1,0 +1,410 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:db="http://www.mulesoft.org/schema/mule/db"
+      xmlns:azure-service-bus-messaging="http://www.mulesoft.org/schema/mule/azure-service-bus-messaging"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core
+            http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/munit
+            http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+        http://www.mulesoft.org/schema/mule/munit-tools
+            http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd
+        http://www.mulesoft.org/schema/mule/db
+            http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+        http://www.mulesoft.org/schema/mule/azure-service-bus-messaging
+            http://www.mulesoft.org/schema/mule/azure-service-bus-messaging/current/mule-azure-service-bus-messaging.xsd">
+
+    <munit:config name="salesforce-lead-cdc-flow-test"/>
+
+    <!-- ================================================================
+         Payloads reutilizáveis via variáveis locais de cada teste
+         ================================================================ -->
+
+    <!-- ================================================================
+         TEST 1 — CREATE changeType → deve chamar db:insert
+         Cobre: set-variable(x2), azure:send(archive), until-successful,
+                idempotent-validator, logger(x2), ee:transform, foreach,
+                choice(CREATE branch), db:insert, logger(after insert)
+         ================================================================ -->
+    <munit:test name="test-lead-cdc-create"
+                description="Lead CDC CREATE: roteia para db:insert (upsert)">
+        <munit:behavior>
+            <munit-tools:mock-when doc:name="Mock Azure archive send"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-lead-sync-events-archive-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock idempotent validator"
+                                   processor="mule:idempotent-message-validator">
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock db:insert"
+                                   processor="db:insert">
+                <munit-tools:then-return>
+                    <munit-tools:payload value='#[{ affectedRows: 1 }]'
+                                         mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+
+            <!-- Mock de segurança: evita chamada real ao errors queue -->
+            <munit-tools:mock-when doc:name="Mock Azure errors send (safety)"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-lead-sync-errors-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event doc:name="Set Lead CDC CREATE event">
+                <munit:payload mediaType="application/java" value='#[{
+                    data: {
+                        schema: "IawqHtF4OtEf5mDxAZ0R_A",
+                        payload: {
+                            LastModifiedDate: "2026-03-16T21:32:31.000Z",
+                            Name: { FirstName: "Alice", LastName: "Souza" },
+                            Email: "alice@example.com",
+                            Phone: "555-1111",
+                            Company: "ACME Corp",
+                            Status: "Open - Not Contacted",
+                            LeadSource: "Web",
+                            CreatedDate: "2026-03-16T21:00:00.000Z",
+                            ChangeEventHeader: {
+                                entityName: "Lead",
+                                changeType: "CREATE",
+                                changedFields: [],
+                                changeOrigin: "com/salesforce/api/soap/66.0;client=SfdcInternalAPI/",
+                                transactionKey: "00012257-2fa4-d817-7023-da1208161d00",
+                                commitTimestamp: 1773696751000,
+                                recordIds: ["00QgL00000Bc8HZUAZ"]
+                            }
+                        },
+                        event: { replayId: 843100 }
+                    },
+                    channel: "/data/LeadChangeEvent",
+                    timestamp: "2026-03-16T21:32:32.221Z"
+                }]'/>
+            </munit:set-event>
+            <flow-ref doc:name="Executa salesforce-lead-cdc-flow" name="salesforce-lead-cdc-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:verify-call doc:name="db:insert deve ser chamado 1 vez"
+                                     processor="db:insert" times="1"/>
+            <munit-tools:verify-call doc:name="db:delete não deve ser chamado"
+                                     processor="db:delete" times="0"/>
+            <munit-tools:verify-call doc:name="Azure archive send deve ser chamado"
+                                     processor="azure-service-bus-messaging:send" times="1">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-lead-sync-events-archive-queue']"/>
+                </munit-tools:with-attributes>
+            </munit-tools:verify-call>
+        </munit:validation>
+    </munit:test>
+
+    <!-- ================================================================
+         TEST 2 — UPDATE changeType → deve chamar db:insert (upsert)
+         Cobre: mesmo caminho do CREATE (mesmo branch do choice)
+         ================================================================ -->
+    <munit:test name="test-lead-cdc-update"
+                description="Lead CDC UPDATE: roteia para db:insert (upsert)">
+        <munit:behavior>
+            <munit-tools:mock-when doc:name="Mock Azure archive send"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-lead-sync-events-archive-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock idempotent validator"
+                                   processor="mule:idempotent-message-validator">
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock db:insert"
+                                   processor="db:insert">
+                <munit-tools:then-return>
+                    <munit-tools:payload value='#[{ affectedRows: 1 }]'
+                                         mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock Azure errors send (safety)"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-lead-sync-errors-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <!-- Payload baseado no sample_data/json.json (UPDATE event real) -->
+            <munit:set-event doc:name="Set Lead CDC UPDATE event">
+                <munit:payload mediaType="application/java" value='#[{
+                    data: {
+                        schema: "IawqHtF4OtEf5mDxAZ0R_A",
+                        payload: {
+                            LastModifiedDate: "2026-03-16T21:32:31.000Z",
+                            Status: "Closed - Not Converted",
+                            Name: { FirstName: "Bruno", LastName: "Lima" },
+                            Email: "bruno@example.com",
+                            Phone: "555-2222",
+                            Company: "Beta Ltd",
+                            LeadSource: "Phone",
+                            CreatedDate: "2026-01-10T08:00:00.000Z",
+                            ChangeEventHeader: {
+                                entityName: "Lead",
+                                changeType: "UPDATE",
+                                changedFields: ["Status", "LastModifiedDate"],
+                                changeOrigin: "com/salesforce/api/soap/66.0;client=SfdcInternalAPI/",
+                                transactionKey: "00012257-2fa4-d817-7023-da1208161d13",
+                                commitTimestamp: 1773696751000,
+                                recordIds: ["00QgL00000Bc8HZUAZ"]
+                            }
+                        },
+                        event: { replayId: 843170 }
+                    },
+                    channel: "/data/LeadChangeEvent",
+                    timestamp: "2026-03-16T21:32:32.221Z"
+                }]'/>
+            </munit:set-event>
+            <flow-ref doc:name="Executa salesforce-lead-cdc-flow" name="salesforce-lead-cdc-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:verify-call doc:name="db:insert deve ser chamado 1 vez"
+                                     processor="db:insert" times="1"/>
+            <munit-tools:verify-call doc:name="db:delete não deve ser chamado"
+                                     processor="db:delete" times="0"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- ================================================================
+         TEST 3 — DELETE changeType → deve chamar db:delete
+         Cobre: choice(DELETE branch), db:delete, logger(after delete)
+         ================================================================ -->
+    <munit:test name="test-lead-cdc-delete"
+                description="Lead CDC DELETE: roteia para db:delete">
+        <munit:behavior>
+            <munit-tools:mock-when doc:name="Mock Azure archive send"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-lead-sync-events-archive-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock idempotent validator"
+                                   processor="mule:idempotent-message-validator">
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock db:delete"
+                                   processor="db:delete">
+                <munit-tools:then-return>
+                    <munit-tools:payload value='#[{ affectedRows: 1 }]'
+                                         mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock Azure errors send (safety)"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-lead-sync-errors-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event doc:name="Set Lead CDC DELETE event">
+                <munit:payload mediaType="application/java" value='#[{
+                    data: {
+                        schema: "IawqHtF4OtEf5mDxAZ0R_A",
+                        payload: {
+                            ChangeEventHeader: {
+                                entityName: "Lead",
+                                changeType: "DELETE",
+                                changedFields: [],
+                                changeOrigin: "com/salesforce/api/soap/66.0;client=SfdcInternalAPI/",
+                                transactionKey: "aabbccdd-1111-2222-3333-444455556666",
+                                commitTimestamp: 1773700000000,
+                                recordIds: ["00QgL00000Bc8HZUAZ"]
+                            }
+                        },
+                        event: { replayId: 843200 }
+                    },
+                    channel: "/data/LeadChangeEvent",
+                    timestamp: "2026-03-16T22:00:00.000Z"
+                }]'/>
+            </munit:set-event>
+            <flow-ref doc:name="Executa salesforce-lead-cdc-flow" name="salesforce-lead-cdc-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:verify-call doc:name="db:delete deve ser chamado 1 vez"
+                                     processor="db:delete" times="1"/>
+            <munit-tools:verify-call doc:name="db:insert não deve ser chamado"
+                                     processor="db:insert" times="0"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- ================================================================
+         TEST 4 — changeType desconhecido → deve cair no otherwise (WARN logger)
+         Cobre: choice(otherwise branch), logger(WARN)
+         ================================================================ -->
+    <munit:test name="test-lead-cdc-unknown-changetype"
+                description="Lead CDC changeType desconhecido: roteia para otherwise (WARN)">
+        <munit:behavior>
+            <munit-tools:mock-when doc:name="Mock Azure archive send"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-lead-sync-events-archive-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock idempotent validator"
+                                   processor="mule:idempotent-message-validator">
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when doc:name="Mock Azure errors send (safety)"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-lead-sync-errors-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event doc:name="Set Lead CDC UNRECOGNIZED event">
+                <munit:payload mediaType="application/java" value='#[{
+                    data: {
+                        schema: "IawqHtF4OtEf5mDxAZ0R_A",
+                        payload: {
+                            ChangeEventHeader: {
+                                entityName: "Lead",
+                                changeType: "UNRECOGNIZED",
+                                changedFields: [],
+                                changeOrigin: "com/salesforce/api/soap/66.0;client=SfdcInternalAPI/",
+                                transactionKey: "ffffffff-eeee-dddd-cccc-bbbbaaaaaaaa",
+                                commitTimestamp: 1773700000001,
+                                recordIds: ["00QgL00000Bc8HZUAZ"]
+                            }
+                        },
+                        event: { replayId: 843300 }
+                    },
+                    channel: "/data/LeadChangeEvent",
+                    timestamp: "2026-03-16T23:00:00.000Z"
+                }]'/>
+            </munit:set-event>
+            <flow-ref doc:name="Executa salesforce-lead-cdc-flow" name="salesforce-lead-cdc-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:verify-call doc:name="db:insert não deve ser chamado"
+                                     processor="db:insert" times="0"/>
+            <munit-tools:verify-call doc:name="db:delete não deve ser chamado"
+                                     processor="db:delete" times="0"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- ================================================================
+         TEST 5 — Erro no archive send → aciona error handler completo
+         Cobre: on-error-continue(logger + ee:transform + azure:send(errors))
+         A azure:send(archive) lança CONNECTIVITY para disparar o handler.
+         ================================================================ -->
+    <munit:test name="test-lead-cdc-error-handler"
+                description="Lead CDC erro no archive: error handler envia para fila de erros">
+        <munit:behavior>
+            <!-- Azure archive send lança erro de conectividade -->
+            <munit-tools:mock-when doc:name="Mock Azure archive send - throw"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-lead-sync-events-archive-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-throw>
+                    <munit-tools:error typeId="AZURE-SERVICE-BUS-MESSAGING:CONNECTIVITY"
+                                       description="Simulated Azure connectivity failure"/>
+                </munit-tools:then-throw>
+            </munit-tools:mock-when>
+
+            <!-- Azure errors send retorna sucesso para o error handler completar -->
+            <munit-tools:mock-when doc:name="Mock Azure errors send - success"
+                                   processor="azure-service-bus-messaging:send">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-lead-sync-errors-queue']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return/>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event doc:name="Set Lead CDC event (qualquer changeType)">
+                <munit:payload mediaType="application/java" value='#[{
+                    data: {
+                        schema: "IawqHtF4OtEf5mDxAZ0R_A",
+                        payload: {
+                            LastModifiedDate: "2026-03-16T21:32:31.000Z",
+                            Status: "Working - Contacted",
+                            ChangeEventHeader: {
+                                entityName: "Lead",
+                                changeType: "UPDATE",
+                                changedFields: ["Status"],
+                                changeOrigin: "com/salesforce/api/soap/66.0;client=SfdcInternalAPI/",
+                                transactionKey: "11111111-2222-3333-4444-555566667777",
+                                commitTimestamp: 1773696751000,
+                                recordIds: ["00QgL00000Bc8HZUAZ"]
+                            }
+                        },
+                        event: { replayId: 843400 }
+                    },
+                    channel: "/data/LeadChangeEvent",
+                    timestamp: "2026-03-16T21:32:32.221Z"
+                }]'/>
+            </munit:set-event>
+            <!-- on-error-continue garante que o flow não propaga exceção -->
+            <flow-ref doc:name="Executa salesforce-lead-cdc-flow" name="salesforce-lead-cdc-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <!-- Verifica que a fila de erros foi acionada pelo error handler -->
+            <munit-tools:verify-call doc:name="Azure errors send deve ser chamado 1 vez"
+                                     processor="azure-service-bus-messaging:send" times="1">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute attributeName="doc:name"
+                                                whereValue="#['sf-lead-sync-errors-queue']"/>
+                </munit-tools:with-attributes>
+            </munit-tools:verify-call>
+            <!-- Nenhum dado deve ter sido persistido -->
+            <munit-tools:verify-call doc:name="db:insert não deve ser chamado"
+                                     processor="db:insert" times="0"/>
+            <munit-tools:verify-call doc:name="db:delete não deve ser chamado"
+                                     processor="db:delete" times="0"/>
+        </munit:validation>
+    </munit:test>
+
+</mule>

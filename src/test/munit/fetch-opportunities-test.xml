@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:db="http://www.mulesoft.org/schema/mule/db"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core
+            http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/munit
+            http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+        http://www.mulesoft.org/schema/mule/munit-tools
+            http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd
+        http://www.mulesoft.org/schema/mule/db
+            http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd">
+
+    <munit:config name="fetch-opportunities-test"/>
+
+    <!-- ================================================================
+         TEST 1 — GET /opportunities com dados → retorna array JSON com oportunidades
+         Cobre: http:listener (fonte ignorada), db:select, ee:transform
+         ================================================================ -->
+    <munit:test name="test-fetch-opportunities-success"
+                description="GET /opportunities: retorna array JSON com oportunidades do banco">
+        <munit:behavior>
+            <munit-tools:mock-when doc:name="Mock db:select - retorna 1 oportunidade"
+                                   processor="db:select">
+                <munit-tools:then-return>
+                    <munit-tools:payload mediaType="application/java" value='#[[
+                        {
+                            id: 1,
+                            sf_id: "006gL00000XYZAbQAL",
+                            opportunity_name: "Enterprise Renewal FY26",
+                            amount: 125000.0,
+                            stage_name: "Proposal/Price Quote",
+                            close_date: "2026-04-30",
+                            probability: 70.0,
+                            account_id: "001gL00001ABCDeQAL",
+                            owner_id: "005gL00000BNrrhQAD",
+                            type: "Existing Customer - Upgrade",
+                            lead_source: "Partner Referral",
+                            currency_iso_code: "USD",
+                            description: "Strategic renewal for enterprise tier.",
+                            change_type: "UPDATE",
+                            change_origin: "com/salesforce/api/soap/66.0",
+                            replay_id: "950001",
+                            created_date: "2026-03-19T11:10:00.000Z",
+                            last_modified_date: "2026-03-19T11:15:00.000Z",
+                            synced_at: "2026-03-19T11:15:01.000Z"
+                        }
+                    ]]'/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <!-- Simula request HTTP GET /opportunities; listener é fonte e é ignorado pelo MUnit -->
+            <munit:set-event doc:name="Set HTTP GET /opportunities event">
+                <munit:payload value='#[null]' mediaType="application/java"/>
+            </munit:set-event>
+            <flow-ref doc:name="Executa fetch-opportunities" name="fetch-opportunities"/>
+        </munit:execution>
+
+        <munit:validation>
+            <!-- Verifica que db:select foi chamado -->
+            <munit-tools:verify-call doc:name="db:select deve ser chamado 1 vez"
+                                     processor="db:select" times="1"/>
+            <!-- Verifica que o payload resultante é um array JSON não nulo -->
+            <munit-tools:assert-that doc:name="Payload deve ser array não nulo"
+                                     expression="#[payload]"
+                                     is="#[MunitTools::notNullValue()]"/>
+            <!-- Verifica que o array contém 1 elemento -->
+            <munit-tools:assert-that doc:name="Array deve conter 1 oportunidade"
+                                     expression="#[sizeOf(payload)]"
+                                     is="#[MunitTools::equalTo(1)]"/>
+            <!-- Verifica campo sf_id do primeiro elemento -->
+            <munit-tools:assert-that doc:name="sf_id da oportunidade deve ser correto"
+                                     expression="#[payload[0].sf_id]"
+                                     is="#[MunitTools::equalTo('006gL00000XYZAbQAL')]"/>
+            <!-- Verifica campo amount -->
+            <munit-tools:assert-that doc:name="Amount deve ser 125000.0"
+                                     expression="#[payload[0].amount]"
+                                     is="#[MunitTools::equalTo(125000.0)]"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- ================================================================
+         TEST 2 — GET /opportunities com banco vazio → retorna array JSON vazio
+         Cobre: ee:transform com lista vazia (path alternativo)
+         ================================================================ -->
+    <munit:test name="test-fetch-opportunities-empty"
+                description="GET /opportunities: retorna array JSON vazio quando banco não tem oportunidades">
+        <munit:behavior>
+            <munit-tools:mock-when doc:name="Mock db:select - retorna lista vazia"
+                                   processor="db:select">
+                <munit-tools:then-return>
+                    <munit-tools:payload value='#[[]]' mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event doc:name="Set HTTP GET /opportunities event (banco vazio)">
+                <munit:payload value='#[null]' mediaType="application/java"/>
+            </munit:set-event>
+            <flow-ref doc:name="Executa fetch-opportunities" name="fetch-opportunities"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:verify-call doc:name="db:select deve ser chamado 1 vez"
+                                     processor="db:select" times="1"/>
+            <munit-tools:assert-that doc:name="Payload deve ser array não nulo"
+                                     expression="#[payload]"
+                                     is="#[MunitTools::notNullValue()]"/>
+            <munit-tools:assert-that doc:name="Array deve estar vazio"
+                                     expression="#[sizeOf(payload)]"
+                                     is="#[MunitTools::equalTo(0)]"/>
+        </munit:validation>
+    </munit:test>
+
+</mule>
